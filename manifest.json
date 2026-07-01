@@ -1,0 +1,23 @@
+{
+    "id": "auto-english-audio",
+    "name": "Auto English Audio",
+    "version": "1.0.0",
+    "manifestURI": "",
+    "language": "typescript",
+    "type": "plugin",
+    "description": "Automatically switches to English audio when streaming online. Falls back to Japanese if no English track is found.",
+    "author": "",
+    "icon": "",
+    "website": "",
+    "readme": "",
+    "notes": "Requires Seanime v2.8.0+. Only applies to Online Streaming playback.",
+    "lang": "multi",
+    "payloadURI": "auto-english-audio.ts",
+    "plugin": {
+        "version": "1",
+        "permissions": {
+            "scopes": ["playback"]
+        }
+    },
+    "isDevelopment": true
+}
