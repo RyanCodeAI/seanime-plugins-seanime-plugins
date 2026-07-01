@@ -12,7 +12,7 @@
     "readme": "",
     "notes": "",
     "lang": "multi",
-    "payloadURI": "https://raw.githubusercontent.com/RyanCodeAI/seanime-plugins/main/auto-english-audio.ts",
+    "payloadURI": "https://raw.githubusercontent.com/RyanCodeAI/seanime-plugins-seanime-plugins/refs/heads/main/auto-english-audio.ts",
     "plugin": {
         "version": "1",
         "permissions": {
