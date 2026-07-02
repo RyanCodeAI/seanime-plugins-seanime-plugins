@@ -1,14 +1,12 @@
 /// <reference path="./plugin.d.ts" />
 
 // Auto English Audio — Seanime Plugin
-// Uses sendGetAudioTrack() to detect the current track language,
-// then switches to English if Japanese is playing.
 
 function init() {
     $ui.register(function(ctx) {
 
-        // Lock to prevent double-switching per episode
         var switchLock = false;
+        var fallbackFired = false;
 
         function isEnglish(lang, label) {
             var l = (lang  || "").toLowerCase().trim();
@@ -25,10 +23,10 @@ function init() {
                    b === "japanese" || b === "sub" || b === "subtitled";
         }
 
-        // Called when we get a response from sendGetAudioTrack().
-        // If the current track is JA, we switch to the other index.
+        // Called when sendGetAudioTrack() responds with the current track info
         function handleCurrentTrack(event) {
             if (switchLock || !event) return;
+            switchLock = true; // claim the lock immediately
 
             var lang  = String(event.language || event.lang  || "");
             var label = String(event.label    || event.name  || "");
@@ -36,65 +34,55 @@ function init() {
                         typeof event.index === "number" ? event.index : -1;
 
             if (isEnglish(lang, label)) {
-                // Already English — nothing to do
-                switchLock = true;
                 ctx.videoCore.showMessage("English audio is already active", 2000);
                 return;
             }
 
-            if (isJapanese(lang, label) || lang !== "") {
-                // Currently Japanese (or another non-EN language).
-                // Switch to the OTHER track index.
-                switchLock = true;
-                var target = (id === 0) ? 1 : 0;
-                ctx.videoCore.setAudioTrack(target);
-                ctx.videoCore.showMessage("Switched to English audio", 3000);
-                return;
-            }
-
-            // Language info missing from the event — use blind fallback below
+            // Currently JA or unknown — switch to the other track index
+            var target = (id === 0) ? 1 : 0;
+            ctx.videoCore.setAudioTrack(target);
+            ctx.videoCore.showMessage("Switched to English audio", 3000);
         }
 
-        // sendGetAudioTrack() fires one of these event names with the current track
+        // Listen on all plausible event names for the sendGetAudioTrack() response
         ctx.videoCore.addEventListener("audio-track",         handleCurrentTrack);
         ctx.videoCore.addEventListener("audio-track-changed", handleCurrentTrack);
         ctx.videoCore.addEventListener("current-audio-track", handleCurrentTrack);
         ctx.videoCore.addEventListener("audiotrack",          handleCurrentTrack);
 
-        // Reset on every new video load
+        // Reset flags on every new video
         ctx.videoCore.addEventListener("video-loaded-metadata", function() {
-            switchLock = false;
+            switchLock    = false;
+            fallbackFired = false;
         });
-
         ctx.videoCore.addEventListener("video-loaded", function() {
-            switchLock = false;
+            switchLock    = false;
+            fallbackFired = false;
         });
 
         ctx.videoCore.addEventListener("video-can-play", function() {
             if (switchLock) return;
-            var type = ctx.videoCore.getCurrentPlaybackType();
-            if (type !== "onlinestream") return;
+            if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
 
-            // Ask the player what audio track is currently active.
-            // The response arrives via one of the listeners above.
+            // Ask the player what track is active — response handled above
             ctx.videoCore.sendGetAudioTrack();
 
-            // Blind fallback: if no response arrives within 1 second,
-            // try track 0 first (screenshot shows EN is track 0 on most providers).
-            // If track 0 is actually JA (some providers swap the order),
-            // the user will need to bump the number below to 1.
-            var waited = 0;
-            var fallbackId = ctx.setInterval(function() {
-                waited += 1;
-                if (switchLock || waited < 2) return;   // wait 2 ticks = ~1 s
-                ctx.clearInterval(fallbackId);
+            // Blind fallback: fire once after ~1 s if no response arrived
+            var ticks = 0;
+            ctx.setInterval(function() {
+                ticks += 1;
+
+                // Only act on the 2nd tick (~1 s) and only once
+                if (ticks !== 2 || fallbackFired) return;
+                fallbackFired = true;
+
                 if (!switchLock) {
                     switchLock = true;
+                    // From the audio picker screenshot EN is index 0 on most providers
                     ctx.videoCore.setAudioTrack(0);
-                    ctx.videoCore.showMessage("Auto-selected audio track 0 (fallback)", 3000);
+                    ctx.videoCore.showMessage("Auto-selected English audio (track 0)", 3000);
                 }
             }, 500);
         });
     });
 }
-
