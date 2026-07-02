@@ -1,11 +1,12 @@
 /// <reference path="./plugin.d.ts" />
 
 // Auto English Audio — Seanime Plugin
+// Switches to English audio and disables subtitles when dub is available.
 
 function init() {
     $ui.register(function(ctx) {
 
-        var switchLock = false;
+        var switchLock    = false;
         var fallbackFired = false;
 
         function isEnglish(lang, label) {
@@ -23,10 +24,17 @@ function init() {
                    b === "japanese" || b === "sub" || b === "subtitled";
         }
 
+        // Switch to English audio AND disable subtitles
+        function activateEnglishDub(audioTrackId) {
+            ctx.videoCore.setAudioTrack(audioTrackId);
+            ctx.videoCore.setTextTrack(-1);  // -1 = subtitles off
+            ctx.videoCore.showMessage("English dub — subtitles off", 3000);
+        }
+
         // Called when sendGetAudioTrack() responds with the current track info
         function handleCurrentTrack(event) {
             if (switchLock || !event) return;
-            switchLock = true; // claim the lock immediately
+            switchLock = true;
 
             var lang  = String(event.language || event.lang  || "");
             var label = String(event.label    || event.name  || "");
@@ -34,14 +42,15 @@ function init() {
                         typeof event.index === "number" ? event.index : -1;
 
             if (isEnglish(lang, label)) {
-                ctx.videoCore.showMessage("English audio is already active", 2000);
+                // Already on English dub — just make sure subs are off
+                ctx.videoCore.setTextTrack(-1);
+                ctx.videoCore.showMessage("English dub active — subtitles off", 2000);
                 return;
             }
 
-            // Currently JA or unknown — switch to the other track index
+            // Currently on JA or unknown — switch to the other track
             var target = (id === 0) ? 1 : 0;
-            ctx.videoCore.setAudioTrack(target);
-            ctx.videoCore.showMessage("Switched to English audio", 3000);
+            activateEnglishDub(target);
         }
 
         // Listen on all plausible event names for the sendGetAudioTrack() response
@@ -71,16 +80,12 @@ function init() {
             var ticks = 0;
             ctx.setInterval(function() {
                 ticks += 1;
-
-                // Only act on the 2nd tick (~1 s) and only once
                 if (ticks !== 2 || fallbackFired) return;
                 fallbackFired = true;
 
                 if (!switchLock) {
                     switchLock = true;
-                    // From the audio picker screenshot EN is index 0 on most providers
-                    ctx.videoCore.setAudioTrack(0);
-                    ctx.videoCore.showMessage("Auto-selected English audio (track 0)", 3000);
+                    activateEnglishDub(0); // EN is track 0 on most providers
                 }
             }, 500);
         });
