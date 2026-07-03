@@ -24,15 +24,15 @@ function init() {
                    b === "japanese" || b === "sub" || b === "subtitled";
         }
 
-        // Switch to English audio AND disable subtitles
+        // Switch audio to English and disable subtitles
         function activateEnglishDub(audioTrackId) {
             ctx.videoCore.setAudioTrack(audioTrackId);
-            ctx.videoCore.setTextTrack(-1);  // -1 = subtitles off
+            ctx.videoCore.setSubtitleTrack(-1);   // -1 = Off
             ctx.videoCore.showMessage("English dub — subtitles off", 3000);
         }
 
-        // Called when sendGetAudioTrack() responds with the current track info
-        function handleCurrentTrack(event) {
+        // Response handler for sendGetAudioTrack()
+        function handleAudioTrackResponse(event) {
             if (switchLock || !event) return;
             switchLock = true;
 
@@ -42,22 +42,22 @@ function init() {
                         typeof event.index === "number" ? event.index : -1;
 
             if (isEnglish(lang, label)) {
-                // Already on English dub — just make sure subs are off
-                ctx.videoCore.setTextTrack(-1);
+                // Already on English — just kill subtitles
+                ctx.videoCore.setSubtitleTrack(-1);
                 ctx.videoCore.showMessage("English dub active — subtitles off", 2000);
                 return;
             }
 
-            // Currently on JA or unknown — switch to the other track
+            // On JA or unknown — switch to the other track index
             var target = (id === 0) ? 1 : 0;
             activateEnglishDub(target);
         }
 
-        // Listen on all plausible event names for the sendGetAudioTrack() response
-        ctx.videoCore.addEventListener("audio-track",         handleCurrentTrack);
-        ctx.videoCore.addEventListener("audio-track-changed", handleCurrentTrack);
-        ctx.videoCore.addEventListener("current-audio-track", handleCurrentTrack);
-        ctx.videoCore.addEventListener("audiotrack",          handleCurrentTrack);
+        // Listen on all plausible event names for sendGetAudioTrack() response
+        ctx.videoCore.addEventListener("audio-track",         handleAudioTrackResponse);
+        ctx.videoCore.addEventListener("audio-track-changed", handleAudioTrackResponse);
+        ctx.videoCore.addEventListener("current-audio-track", handleAudioTrackResponse);
+        ctx.videoCore.addEventListener("audiotrack",          handleAudioTrackResponse);
 
         // Reset flags on every new video
         ctx.videoCore.addEventListener("video-loaded-metadata", function() {
@@ -73,19 +73,18 @@ function init() {
             if (switchLock) return;
             if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
 
-            // Ask the player what track is active — response handled above
+            // Ask the player what audio track is active — handled by listeners above
             ctx.videoCore.sendGetAudioTrack();
 
-            // Blind fallback: fire once after ~1 s if no response arrived
+            // Blind fallback: if no response within ~1 s, try track 0
             var ticks = 0;
             ctx.setInterval(function() {
                 ticks += 1;
                 if (ticks !== 2 || fallbackFired) return;
                 fallbackFired = true;
-
                 if (!switchLock) {
                     switchLock = true;
-                    activateEnglishDub(0); // EN is track 0 on most providers
+                    activateEnglishDub(0);
                 }
             }, 500);
         });
