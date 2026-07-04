@@ -1,54 +1,94 @@
 /// <reference path="./plugin.d.ts" />
 
-// Auto English Audio — DIAGNOSTIC v2
-// Inspects subtitleTracks and onlinestreamParams from getCurrentPlaybackInfo()
+// Auto English Audio — Seanime Plugin
+//
+// Detection strategy using getCurrentPlaybackInfo():
+//  • subtitleTracks.length < 3  → dub stream  → set track 0 (EN) + disable subs
+//  • subtitleTracks.length >= 3 → sub stream  → do nothing (Seanime already picked EN subs)
+//
+// Fallback if subtitleTracks unavailable: try onlinestreamParams for dubbed flag
 
 function init() {
     $ui.register(function(ctx) {
 
-        function truncate(s, n) {
-            var str = String(s || "");
-            return str.length > n ? str.substring(0, n) + "..." : str;
+        var done = false;
+
+        function isEnglish(lang, label) {
+            var l = (lang  || "").toLowerCase().trim();
+            var b = (label || "").toLowerCase().trim();
+            return l === "en" || l === "eng" || l.indexOf("en-") === 0 ||
+                   b === "english" || b === "dub" || b === "dubbed" ||
+                   b.indexOf("english") !== -1 || b.indexOf("dub") !== -1;
         }
 
+        function reset() { done = false; }
+        ctx.videoCore.addEventListener("video-loaded-metadata", reset);
+        ctx.videoCore.addEventListener("video-loaded",          reset);
+
         ctx.videoCore.addEventListener("video-can-play", function() {
+            if (done) return;
             if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
+            done = true;
 
-            ctx.videoCore.setAudioTrack(0);
+            try {
+                var pi = ctx.videoCore.getCurrentPlaybackInfo();
 
-            var ticks = 0;
-            ctx.setInterval(function() {
-                ticks++;
-                if (ticks !== 2) return;
+                // ── Try onlinestreamParams for explicit dub flag ───────────
+                var op = pi && pi.onlinestreamParams;
+                if (op) {
+                    var dubByParam =
+                        op.dubbed === true ||
+                        op.isDub  === true ||
+                        String(op.audioLanguage || "").toLowerCase().indexOf("en") === 0 ||
+                        String(op.language      || "").toLowerCase().indexOf("en") === 0 ||
+                        String(op.audio         || "").toLowerCase() === "dub" ||
+                        String(op.audio         || "").toLowerCase() === "dubbed";
 
-                try {
-                    var pi = ctx.videoCore.getCurrentPlaybackInfo();
+                    var subByParam =
+                        op.dubbed === false ||
+                        op.isDub  === false ||
+                        String(op.audioLanguage || "").toLowerCase().indexOf("ja") === 0 ||
+                        String(op.language      || "").toLowerCase().indexOf("ja") === 0 ||
+                        String(op.audio         || "").toLowerCase() === "sub";
 
-                    // Show subtitleTracks
-                    var st = pi && pi.subtitleTracks;
-                    ctx.videoCore.showMessage(
-                        "subtitleTracks: " + truncate(JSON.stringify(st), 150),
-                        8000
-                    );
-
-                    // Show onlinestreamParams
-                    var op = pi && pi.onlinestreamParams;
-                    ctx.videoCore.showMessage(
-                        "onlinestreamParams: " + truncate(JSON.stringify(op), 150),
-                        8000
-                    );
-
-                    // Show selectedVideoSource
-                    var vs = pi && pi.selectedVideoSource;
-                    ctx.videoCore.showMessage(
-                        "selectedVideoSource: " + truncate(JSON.stringify(vs), 150),
-                        8000
-                    );
-
-                } catch(e) {
-                    ctx.videoCore.showMessage("Error: " + e.message, 4000);
+                    if (dubByParam && !subByParam) {
+                        ctx.videoCore.setAudioTrack(0);
+                        ctx.videoCore.setSubtitleTrack(-1);
+                        ctx.videoCore.showMessage("English dub — subtitles off", 3000);
+                        return;
+                    }
+                    if (subByParam && !dubByParam) {
+                        // Sub stream — Seanime default is already EN subs on JA audio
+                        ctx.videoCore.showMessage("Sub stream — EN subtitles active", 2000);
+                        return;
+                    }
                 }
-            }, 400);
+
+                // ── Fallback: use subtitle track count as heuristic ────────
+                // Dub streams typically have 0–2 subtitle options
+                // Sub streams typically have 3+ subtitle language options
+                var subTracks  = (pi && pi.subtitleTracks) || [];
+                var trackCount = Array.isArray(subTracks) ? subTracks.length : 0;
+
+                if (trackCount === 0 || trackCount < 3) {
+                    // Likely dub
+                    ctx.videoCore.setAudioTrack(0);
+                    ctx.videoCore.setSubtitleTrack(-1);
+                    ctx.videoCore.showMessage(
+                        "English dub (" + trackCount + " sub tracks) — subtitles off", 3000
+                    );
+                } else {
+                    // Likely sub — Seanime already selected EN subs, do nothing
+                    ctx.videoCore.showMessage(
+                        "Sub stream (" + trackCount + " sub tracks) — EN subs active", 2000
+                    );
+                }
+
+            } catch(e) {
+                // Last resort: just switch audio
+                ctx.videoCore.setAudioTrack(0);
+                ctx.videoCore.showMessage("Audio → track 0 (detection failed)", 2000);
+            }
         });
     });
 }
