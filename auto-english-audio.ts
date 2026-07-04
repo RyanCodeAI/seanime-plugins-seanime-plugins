@@ -1,14 +1,17 @@
 /// <reference path="./plugin.d.ts" />
 
 // Auto English Audio — Seanime Plugin
-// Uses sendGetAudioTrack() to detect the current track language,
-// then switches to English if Japanese is playing.
+//
+// Detection strategy using getCurrentPlaybackInfo():
+//  • subtitleTracks.length < 3  → dub stream  → set track 0 (EN) + disable subs
+//  • subtitleTracks.length >= 3 → sub stream  → do nothing (Seanime already picked EN subs)
+//
+// Fallback if subtitleTracks unavailable: try onlinestreamParams for dubbed flag
 
 function init() {
     $ui.register(function(ctx) {
 
-        // Lock to prevent double-switching per episode
-        var switchLock = false;
+        var done = false;
 
         function isEnglish(lang, label) {
             var l = (lang  || "").toLowerCase().trim();
@@ -18,82 +21,74 @@ function init() {
                    b.indexOf("english") !== -1 || b.indexOf("dub") !== -1;
         }
 
-        function isJapanese(lang, label) {
-            var l = (lang  || "").toLowerCase().trim();
-            var b = (label || "").toLowerCase().trim();
-            return l === "ja" || l === "jpn" || l === "jp" ||
-                   b === "japanese" || b === "sub" || b === "subtitled";
-        }
-
-        // Called when we get a response from sendGetAudioTrack().
-        // If the current track is JA, we switch to the other index.
-        function handleCurrentTrack(event) {
-            if (switchLock || !event) return;
-
-            var lang  = String(event.language || event.lang  || "");
-            var label = String(event.label    || event.name  || "");
-            var id    = typeof event.id    === "number" ? event.id    :
-                        typeof event.index === "number" ? event.index : -1;
-
-            if (isEnglish(lang, label)) {
-                // Already English — nothing to do
-                switchLock = true;
-                ctx.videoCore.showMessage("English audio is already active", 2000);
-                return;
-            }
-
-            if (isJapanese(lang, label) || lang !== "") {
-                // Currently Japanese (or another non-EN language).
-                // Switch to the OTHER track index.
-                switchLock = true;
-                var target = (id === 0) ? 1 : 0;
-                ctx.videoCore.setAudioTrack(target);
-                ctx.videoCore.showMessage("Switched to English audio", 3000);
-                return;
-            }
-
-            // Language info missing from the event — use blind fallback below
-        }
-
-        // sendGetAudioTrack() fires one of these event names with the current track
-        ctx.videoCore.addEventListener("audio-track",         handleCurrentTrack);
-        ctx.videoCore.addEventListener("audio-track-changed", handleCurrentTrack);
-        ctx.videoCore.addEventListener("current-audio-track", handleCurrentTrack);
-        ctx.videoCore.addEventListener("audiotrack",          handleCurrentTrack);
-
-        // Reset on every new video load
-        ctx.videoCore.addEventListener("video-loaded-metadata", function() {
-            switchLock = false;
-        });
-
-        ctx.videoCore.addEventListener("video-loaded", function() {
-            switchLock = false;
-        });
+        function reset() { done = false; }
+        ctx.videoCore.addEventListener("video-loaded-metadata", reset);
+        ctx.videoCore.addEventListener("video-loaded",          reset);
 
         ctx.videoCore.addEventListener("video-can-play", function() {
-            if (switchLock) return;
-            var type = ctx.videoCore.getCurrentPlaybackType();
-            if (type !== "onlinestream") return;
+            if (done) return;
+            if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
+            done = true;
 
-            // Ask the player what audio track is currently active.
-            // The response arrives via one of the listeners above.
-            ctx.videoCore.sendGetAudioTrack();
+            try {
+                var pi = ctx.videoCore.getCurrentPlaybackInfo();
 
-            // Blind fallback: if no response arrives within 1 second,
-            // try track 0 first (screenshot shows EN is track 0 on most providers).
-            // If track 0 is actually JA (some providers swap the order),
-            // the user will need to bump the number below to 1.
-            var waited = 0;
-            var fallbackId = ctx.setInterval(function() {
-                waited += 1;
-                if (switchLock || waited < 2) return;   // wait 2 ticks = ~1 s
-                ctx.clearInterval(fallbackId);
-                if (!switchLock) {
-                    switchLock = true;
-                    ctx.videoCore.setAudioTrack(0);
-                    ctx.videoCore.showMessage("Auto-selected audio track 0 (fallback)", 3000);
+                // ── Try onlinestreamParams for explicit dub flag ───────────
+                var op = pi && pi.onlinestreamParams;
+                if (op) {
+                    var dubByParam =
+                        op.dubbed === true ||
+                        op.isDub  === true ||
+                        String(op.audioLanguage || "").toLowerCase().indexOf("en") === 0 ||
+                        String(op.language      || "").toLowerCase().indexOf("en") === 0 ||
+                        String(op.audio         || "").toLowerCase() === "dub" ||
+                        String(op.audio         || "").toLowerCase() === "dubbed";
+
+                    var subByParam =
+                        op.dubbed === false ||
+                        op.isDub  === false ||
+                        String(op.audioLanguage || "").toLowerCase().indexOf("ja") === 0 ||
+                        String(op.language      || "").toLowerCase().indexOf("ja") === 0 ||
+                        String(op.audio         || "").toLowerCase() === "sub";
+
+                    if (dubByParam && !subByParam) {
+                        ctx.videoCore.setAudioTrack(0);
+                        ctx.videoCore.setSubtitleTrack(-1);
+                        ctx.videoCore.showMessage("English dub — subtitles off", 3000);
+                        return;
+                    }
+                    if (subByParam && !dubByParam) {
+                        // Sub stream — Seanime default is already EN subs on JA audio
+                        ctx.videoCore.showMessage("Sub stream — EN subtitles active", 2000);
+                        return;
+                    }
                 }
-            }, 500);
+
+                // ── Fallback: use subtitle track count as heuristic ────────
+                // Dub streams typically have 0–2 subtitle options
+                // Sub streams typically have 3+ subtitle language options
+                var subTracks  = (pi && pi.subtitleTracks) || [];
+                var trackCount = Array.isArray(subTracks) ? subTracks.length : 0;
+
+                if (trackCount === 0 || trackCount < 3) {
+                    // Likely dub
+                    ctx.videoCore.setAudioTrack(0);
+                    ctx.videoCore.setSubtitleTrack(-1);
+                    ctx.videoCore.showMessage(
+                        "English dub (" + trackCount + " sub tracks) — subtitles off", 3000
+                    );
+                } else {
+                    // Likely sub — Seanime already selected EN subs, do nothing
+                    ctx.videoCore.showMessage(
+                        "Sub stream (" + trackCount + " sub tracks) — EN subs active", 2000
+                    );
+                }
+
+            } catch(e) {
+                // Last resort: just switch audio
+                ctx.videoCore.setAudioTrack(0);
+                ctx.videoCore.showMessage("Audio → track 0 (detection failed)", 2000);
+            }
         });
     });
 }
