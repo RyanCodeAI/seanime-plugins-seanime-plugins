@@ -2,92 +2,73 @@
 
 // Auto English Audio — Seanime Plugin
 //
-// Detection strategy using getCurrentPlaybackInfo():
-//  • subtitleTracks.length < 3  → dub stream  → set track 0 (EN) + disable subs
-//  • subtitleTracks.length >= 3 → sub stream  → do nothing (Seanime already picked EN subs)
+// Detection: getCurrentPlaybackInfo().subtitleTracks.length
+//   < 3 tracks → dub stream  → switch to EN audio, keep disabling subs for 3s
+//   ≥ 3 tracks → sub stream  → do nothing (Seanime already picked EN subs on JA audio)
 //
-// Fallback if subtitleTracks unavailable: try onlinestreamParams for dubbed flag
+// The subtitle disable is retried every 400ms for ~3s because Seanime can
+// re-apply its default subtitle selection after video-can-play fires.
 
 function init() {
     $ui.register(function(ctx) {
 
-        var done = false;
+        var isDub          = false;
+        var episodeActive  = false;
+        var subKillTicks   = 0;
+        var MSG_SHOWN      = false;
 
-        function isEnglish(lang, label) {
-            var l = (lang  || "").toLowerCase().trim();
-            var b = (label || "").toLowerCase().trim();
-            return l === "en" || l === "eng" || l.indexOf("en-") === 0 ||
-                   b === "english" || b === "dub" || b === "dubbed" ||
-                   b.indexOf("english") !== -1 || b.indexOf("dub") !== -1;
+        // ── Master interval: keeps killing subs for dub anime ──────────────
+        ctx.setInterval(function() {
+            if (!isDub || !episodeActive) return;
+            subKillTicks++;
+            ctx.videoCore.setSubtitleTrack(-1);
+
+            if (subKillTicks === 1 && !MSG_SHOWN) {
+                MSG_SHOWN = true;
+                ctx.videoCore.showMessage("English dub — subtitles off", 3000);
+            }
+
+            // Stop after ~3 s (8 ticks × 400 ms)
+            if (subKillTicks >= 8) {
+                isDub = false; // stop the loop
+            }
+        }, 400);
+
+        // ── Reset on every new episode ─────────────────────────────────────
+        function reset() {
+            isDub         = false;
+            episodeActive = false;
+            subKillTicks  = 0;
+            MSG_SHOWN     = false;
         }
-
-        function reset() { done = false; }
         ctx.videoCore.addEventListener("video-loaded-metadata", reset);
         ctx.videoCore.addEventListener("video-loaded",          reset);
 
+        // ── Main logic on video-can-play ───────────────────────────────────
         ctx.videoCore.addEventListener("video-can-play", function() {
-            if (done) return;
+            if (episodeActive) return;
             if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
-            done = true;
+            episodeActive = true;
 
             try {
-                var pi = ctx.videoCore.getCurrentPlaybackInfo();
+                var pi        = ctx.videoCore.getCurrentPlaybackInfo();
+                var subTracks = (pi && pi.subtitleTracks) || [];
+                var count     = Array.isArray(subTracks) ? subTracks.length : 0;
 
-                // ── Try onlinestreamParams for explicit dub flag ───────────
-                var op = pi && pi.onlinestreamParams;
-                if (op) {
-                    var dubByParam =
-                        op.dubbed === true ||
-                        op.isDub  === true ||
-                        String(op.audioLanguage || "").toLowerCase().indexOf("en") === 0 ||
-                        String(op.language      || "").toLowerCase().indexOf("en") === 0 ||
-                        String(op.audio         || "").toLowerCase() === "dub" ||
-                        String(op.audio         || "").toLowerCase() === "dubbed";
-
-                    var subByParam =
-                        op.dubbed === false ||
-                        op.isDub  === false ||
-                        String(op.audioLanguage || "").toLowerCase().indexOf("ja") === 0 ||
-                        String(op.language      || "").toLowerCase().indexOf("ja") === 0 ||
-                        String(op.audio         || "").toLowerCase() === "sub";
-
-                    if (dubByParam && !subByParam) {
-                        ctx.videoCore.setAudioTrack(0);
-                        ctx.videoCore.setSubtitleTrack(-1);
-                        ctx.videoCore.showMessage("English dub — subtitles off", 3000);
-                        return;
-                    }
-                    if (subByParam && !dubByParam) {
-                        // Sub stream — Seanime default is already EN subs on JA audio
-                        ctx.videoCore.showMessage("Sub stream — EN subtitles active", 2000);
-                        return;
-                    }
-                }
-
-                // ── Fallback: use subtitle track count as heuristic ────────
-                // Dub streams typically have 0–2 subtitle options
-                // Sub streams typically have 3+ subtitle language options
-                var subTracks  = (pi && pi.subtitleTracks) || [];
-                var trackCount = Array.isArray(subTracks) ? subTracks.length : 0;
-
-                if (trackCount === 0 || trackCount < 3) {
-                    // Likely dub
+                if (count < 3) {
+                    // Dub stream: switch to track 0 (EN) and start killing subs
+                    isDub        = true;
+                    subKillTicks = 0;
                     ctx.videoCore.setAudioTrack(0);
-                    ctx.videoCore.setSubtitleTrack(-1);
-                    ctx.videoCore.showMessage(
-                        "English dub (" + trackCount + " sub tracks) — subtitles off", 3000
-                    );
+                    ctx.videoCore.setSubtitleTrack(-1); // first immediate attempt
                 } else {
-                    // Likely sub — Seanime already selected EN subs, do nothing
-                    ctx.videoCore.showMessage(
-                        "Sub stream (" + trackCount + " sub tracks) — EN subs active", 2000
-                    );
+                    // Sub stream: Seanime already shows EN subs on JA audio — do nothing
+                    ctx.videoCore.showMessage("Sub stream — EN subtitles active", 2000);
                 }
-
             } catch(e) {
-                // Last resort: just switch audio
+                // Detection failed — fallback: switch audio only
                 ctx.videoCore.setAudioTrack(0);
-                ctx.videoCore.showMessage("Audio → track 0 (detection failed)", 2000);
+                ctx.videoCore.showMessage("Audio → EN track (detection failed)", 2000);
             }
         });
     });
