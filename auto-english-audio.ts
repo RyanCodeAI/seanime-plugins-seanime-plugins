@@ -2,74 +2,77 @@
 
 // Auto English Audio — Seanime Plugin
 //
-// Detection: getCurrentPlaybackInfo().subtitleTracks.length
-//   < 3 tracks → dub stream  → switch to EN audio, keep disabling subs for 3s
-//   ≥ 3 tracks → sub stream  → do nothing (Seanime already picked EN subs on JA audio)
-//
-// The subtitle disable is retried every 400ms for ~3s because Seanime can
-// re-apply its default subtitle selection after video-can-play fires.
+// IMPORTANT: every videoCore call below fires AT MOST ONCE per episode.
+// Earlier versions retried setSubtitleTrack() in a tight loop, which caused
+// HLS "keyLoadError" crashes on encrypted/multi-dub streams by yanking the
+// track mid key-load. This version never repeats a call.
 
 function init() {
     $ui.register(function(ctx) {
 
-        var isDub          = false;
-        var episodeActive  = false;
-        var subKillTicks   = 0;
-        var MSG_SHOWN      = false;
+        var handled = false;
 
-        // ── Master interval: keeps killing subs for dub anime ──────────────
-        ctx.setInterval(function() {
-            if (!isDub || !episodeActive) return;
-            subKillTicks++;
-            ctx.videoCore.setSubtitleTrack(-1);
-
-            if (subKillTicks === 1 && !MSG_SHOWN) {
-                MSG_SHOWN = true;
-                ctx.videoCore.showMessage("English dub — subtitles off", 3000);
-            }
-
-            // Stop after ~3 s (8 ticks × 400 ms)
-            if (subKillTicks >= 8) {
-                isDub = false; // stop the loop
-            }
-        }, 400);
-
-        // ── Reset on every new episode ─────────────────────────────────────
-        function reset() {
-            isDub         = false;
-            episodeActive = false;
-            subKillTicks  = 0;
-            MSG_SHOWN     = false;
+        function safe(fn) {
+            try { fn(); } catch (e) { /* swallow — never let one failed call break playback */ }
         }
+
+        function reset() { handled = false; }
         ctx.videoCore.addEventListener("video-loaded-metadata", reset);
         ctx.videoCore.addEventListener("video-loaded",          reset);
 
-        // ── Main logic on video-can-play ───────────────────────────────────
         ctx.videoCore.addEventListener("video-can-play", function() {
-            if (episodeActive) return;
+            if (handled) return;
             if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
-            episodeActive = true;
+            handled = true;
 
-            try {
-                var pi        = ctx.videoCore.getCurrentPlaybackInfo();
-                var subTracks = (pi && pi.subtitleTracks) || [];
-                var count     = Array.isArray(subTracks) ? subTracks.length : 0;
+            // ── Step 1 (immediate): best-effort dub detection via subtitle count ──
+            // This heuristic is imperfect (breaks on titles with many parallel
+            // dubs AND many subtitle languages) but is the best signal available
+            // without an official "list audio tracks" API.
+            var likelyHasDub = true; // default assumption
+            safe(function() {
+                var pi = ctx.videoCore.getCurrentPlaybackInfo();
+                var subs = (pi && pi.subtitleTracks) || [];
+                var count = Array.isArray(subs) ? subs.length : 0;
+                likelyHasDub = count > 0 && count < 3;
+            });
 
-                if (count < 3) {
-                    // Dub stream: switch to track 0 (EN) and start killing subs
-                    isDub        = true;
-                    subKillTicks = 0;
-                    ctx.videoCore.setAudioTrack(0);
-                    ctx.videoCore.setSubtitleTrack(-1); // first immediate attempt
-                } else {
-                    // Sub stream: Seanime already shows EN subs on JA audio — do nothing
-                    ctx.videoCore.showMessage("Sub stream — EN subtitles active", 2000);
+            // ── Step 2 (~500ms later): ONE audio switch attempt ──────────────
+            var ticks = 0;
+            ctx.setInterval(function() {
+                ticks++;
+
+                if (ticks === 1) {
+                    if (likelyHasDub) {
+                        safe(function() { ctx.videoCore.setAudioTrack(0); });
+                    }
+                    return;
                 }
-            } catch(e) {
-                // Detection failed — fallback: switch audio only
-                ctx.videoCore.setAudioTrack(0);
-                ctx.videoCore.showMessage("Audio → EN track (detection failed)", 2000);
-            }
+
+                // ── Step 3 (~1s later): ONE subtitle action, then stop forever ──
+                if (ticks === 2) {
+                    if (likelyHasDub) {
+                        safe(function() { ctx.videoCore.setSubtitleTrack(-1); });
+                        ctx.videoCore.showMessage("English dub — subtitles off", 3000);
+                    } else {
+                        // Sub-only: get the real track list (properly awaited this time)
+                        safe(function() {
+                            var maybePromise = ctx.videoCore.getTextTracks();
+                            if (maybePromise && typeof maybePromise.then === "function") {
+                                maybePromise.then(function(tracks) {
+                                    if (tracks && tracks.length > 0) {
+                                        safe(function() { ctx.videoCore.setSubtitleTrack(tracks[0].index); });
+                                    }
+                                }).catch(function() {});
+                            }
+                        });
+                        ctx.videoCore.showMessage("No dub — English subtitles on", 3000);
+                    }
+
+                    // ── Step 4: one safety-net resume in case a switch stalled it ──
+                    safe(function() { ctx.videoCore.resume(); });
+                }
+            }, 500);
         });
     });
 }
