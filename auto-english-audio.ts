@@ -1,19 +1,22 @@
 /// <reference path="./plugin.d.ts" />
 
-// DIAGNOSTIC — isolates ONE message: the raw content of onlinestreamParams.
-// Shows for 20 seconds, nothing else fires. Same core behavior otherwise.
+// Auto English Audio — Seanime Plugin
+//
+// Detection order:
+//  1. Known-provider override — some providers (e.g. aq-anizone) embed every
+//     audio language in one HLS stream regardless of what their own
+//     "dubbed" flag says. For these, always treat as dub-available.
+//  2. Otherwise, subtitle-track-count heuristic as a general fallback.
+//
+// Add more provider names to KNOWN_MULTI_AUDIO_PROVIDERS below if you hit
+// the same issue elsewhere — just add the provider's name string.
+
+var KNOWN_MULTI_AUDIO_PROVIDERS = ["aq-anizone"];
 
 function init() {
     $ui.register(function(ctx) {
 
         var handled = false;
-
-        function safeStr(o) {
-            try {
-                var s = JSON.stringify(o);
-                return s ? s : "null";
-            } catch(e) { return "ERROR: " + e.message; }
-        }
 
         function isEnglish(lang, label) {
             var l = (lang  || "").toLowerCase().trim();
@@ -21,6 +24,15 @@ function init() {
             return l === "en" || l.indexOf("en-") === 0 || l === "eng" ||
                    b === "english" || b.indexOf("english") !== -1 ||
                    b === "dub" || b === "dubbed" || b.indexOf("dub") !== -1;
+        }
+
+        function isKnownMultiAudioProvider(name) {
+            if (!name) return false;
+            var n = String(name).toLowerCase();
+            for (var i = 0; i < KNOWN_MULTI_AUDIO_PROVIDERS.length; i++) {
+                if (n === KNOWN_MULTI_AUDIO_PROVIDERS[i].toLowerCase()) return true;
+            }
+            return false;
         }
 
         function disableSubtitlesRetried() {
@@ -62,32 +74,30 @@ function init() {
 
             try { ctx.videoCore.setAudioTrack(0); } catch(e) {}
 
-            // Give the player a moment to settle before touching subtitles —
-            // may also help avoid the libass timing error you saw.
             var ticks = 0;
             ctx.setInterval(function() {
                 ticks++;
-                if (ticks !== 2) return; // fires once, ~700ms in
+                if (ticks !== 2) return; // ~700ms delay before touching subtitles
 
-                var pi    = null;
-                var count = 0;
+                var pi       = null;
+                var count    = 0;
+                var provider = null;
                 try {
-                    pi    = ctx.videoCore.getCurrentPlaybackInfo();
+                    pi       = ctx.videoCore.getCurrentPlaybackInfo();
                     var subs = (pi && pi.subtitleTracks) || [];
-                    count = Array.isArray(subs) ? subs.length : 0;
+                    count    = Array.isArray(subs) ? subs.length : 0;
+                    provider = pi && pi.onlinestreamParams && pi.onlinestreamParams.provider;
                 } catch(e) {}
 
-                // THE ONE MESSAGE THAT MATTERS — isolated, 20 seconds on screen.
-                // Please screenshot exactly this box.
-                ctx.videoCore.showMessage(
-                    "PARAMS: " + safeStr(pi && pi.onlinestreamParams),
-                    20000
-                );
-
-                if (count > 0 && count < 3) {
+                if (isKnownMultiAudioProvider(provider)) {
                     disableSubtitlesRetried();
+                    ctx.videoCore.showMessage("English dub (" + provider + ") — subtitles off", 3000);
+                } else if (count > 0 && count < 3) {
+                    disableSubtitlesRetried();
+                    ctx.videoCore.showMessage("English dub — subtitles off", 3000);
                 } else {
                     enableEnglishSubtitles();
+                    ctx.videoCore.showMessage("No dub — English subtitles on", 3000);
                 }
             }, 350);
         });
