@@ -16,7 +16,10 @@
     "plugin": {
         "version": "1",
         "permissions": {
-            "scopes": ["playback"]
+            "scopes": ["playback"],
+            "allow": {
+                "urls": ["http://127.0.0.1:43211/**"]
+            }
         }
     },
     "isDevelopment": false
