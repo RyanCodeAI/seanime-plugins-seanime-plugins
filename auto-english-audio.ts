@@ -2,14 +2,20 @@
 
 // Auto English Audio — Seanime Plugin
 //
-// Primary method: fetch the real HLS manifest, parse #EXT-X-MEDIA:TYPE=AUDIO
-// lines to get the true track list, then switch precisely.
+// CORE LOGIC (always runs, no special permissions needed):
+//  1. Always attempt setAudioTrack(0) once — trusts that English is always
+//     the first listed track when a dub exists. Harmless no-op on sub-only
+//     anime since there's nothing else to switch to.
+//  2. Decide subtitles using subtitle-track count as a proxy for "dub likely
+//     exists": few subtitle tracks -> assume dub -> subtitles off.
+//     Many subtitle tracks -> assume sub-only -> leave subtitles on.
+//     (Imperfect only for the rare title with BOTH many dubs and many subs.)
 //
-// Fallback (if fetch fails): trust that English is always index 0 when a dub
-// exists — no more subtitle-count guessing, which was proven wrong.
-//
-// Subtitle-off is retried ONCE more after a short delay (2 attempts total,
-// never a tight loop) since a single call doesn't always stick.
+// BONUS (best-effort, silently ignored if it fails):
+//  Tries ctx.fetch() on the real HLS manifest to read the true audio track
+//  list and override the guess with certainty. Since Seanime v3.3.0 requires
+//  domain whitelisting for plugin network access, this may not work without
+//  extra manifest permissions — if so, the core logic above still runs fine.
 
 function init() {
     $ui.register(function(ctx) {
@@ -24,31 +30,12 @@ function init() {
                    b === "dub" || b === "dubbed" || b.indexOf("dub") !== -1;
         }
 
-        function parseAudioTracks(manifestText) {
-            var tracks = [];
-            var lines = manifestText.split("\n");
-            for (var i = 0; i < lines.length; i++) {
-                var line = lines[i];
-                if (line.indexOf("#EXT-X-MEDIA:") === 0 && line.indexOf("TYPE=AUDIO") !== -1) {
-                    var nameMatch = line.match(/NAME="([^"]*)"/);
-                    var langMatch = line.match(/LANGUAGE="([^"]*)"/);
-                    tracks.push({
-                        index: tracks.length,
-                        name: nameMatch ? nameMatch[1] : "",
-                        language: langMatch ? langMatch[1] : ""
-                    });
-                }
-            }
-            return tracks;
-        }
-
-        // Turn subtitles off with one immediate attempt + one retry ~900ms later.
         function disableSubtitlesRetried() {
             try { ctx.videoCore.setSubtitleTrack(-1); } catch(e) {}
             var ticks = 0;
             ctx.setInterval(function() {
                 ticks++;
-                if (ticks !== 2) return; // fires once, ~900ms after first attempt
+                if (ticks !== 2) return; // one retry, ~900ms later
                 try { ctx.videoCore.setSubtitleTrack(-1); } catch(e) {}
             }, 450);
         }
@@ -71,15 +58,75 @@ function init() {
             } catch(e) {}
         }
 
-        // Fallback when manifest fetch fails: trust index 0 = English (per your
-        // observation), and detect "no dub" only via the headphone-icon proxy —
-        // which we approximate as "audio switch had literally nothing to switch"
-        // by just always attempting it once. Harmless on true sub-only anime
-        // since there's nothing else to switch to.
-        function gentleFallback(reason) {
-            ctx.videoCore.showMessage("Manifest check failed (" + reason + ") — using fallback", 4000);
-            try { ctx.videoCore.setAudioTrack(0); } catch(e) {}
-            disableSubtitlesRetried();
+        function parseAudioTracks(manifestText) {
+            var tracks = [];
+            var lines = manifestText.split("\n");
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.indexOf("#EXT-X-MEDIA:") === 0 && line.indexOf("TYPE=AUDIO") !== -1) {
+                    var nameMatch = line.match(/NAME="([^"]*)"/);
+                    var langMatch = line.match(/LANGUAGE="([^"]*)"/);
+                    tracks.push({
+                        index: tracks.length,
+                        name: nameMatch ? nameMatch[1] : "",
+                        language: langMatch ? langMatch[1] : ""
+                    });
+                }
+            }
+            return tracks;
+        }
+
+        // ── CORE: runs unconditionally, no network needed ──────────────────
+        function runCoreLogic() {
+            try {
+                var pi    = ctx.videoCore.getCurrentPlaybackInfo();
+                var subs  = (pi && pi.subtitleTracks) || [];
+                var count = Array.isArray(subs) ? subs.length : 0;
+
+                // Always attempt the switch — trusts English is index 0
+                try { ctx.videoCore.setAudioTrack(0); } catch(e) {}
+
+                if (count > 0 && count < 3) {
+                    disableSubtitlesRetried();
+                    ctx.videoCore.showMessage("English dub — subtitles off", 3000);
+                } else {
+                    enableEnglishSubtitles();
+                    ctx.videoCore.showMessage("No dub — English subtitles on", 3000);
+                }
+            } catch(e) {}
+        }
+
+        // ── BONUS: best-effort, more accurate, silently skipped on failure ─
+        async function tryManifestOverride() {
+            try {
+                var status = await ctx.videoCore.pullStatus();
+                var manifestUrl = status && status.id;
+                if (!manifestUrl) return;
+
+                var res  = await ctx.fetch(manifestUrl);
+                var text = await res.text();
+                var tracks = parseAudioTracks(text);
+                if (tracks.length === 0) return; // no separate audio tracks — nothing to override
+
+                var enTrack = null;
+                for (var i = 0; i < tracks.length; i++) {
+                    if (isEnglish(tracks[i].language, tracks[i].name)) { enTrack = tracks[i]; break; }
+                }
+                if (!enTrack && tracks.length > 1) enTrack = tracks[0];
+
+                if (enTrack) {
+                    try { ctx.videoCore.setAudioTrack(enTrack.index); } catch(e) {}
+                    disableSubtitlesRetried();
+                    ctx.videoCore.showMessage(
+                        "Confirmed: English dub (" + tracks.length + " tracks) — subtitles off", 3000
+                    );
+                } else {
+                    enableEnglishSubtitles();
+                    ctx.videoCore.showMessage("Confirmed: no English dub — subtitles on", 3000);
+                }
+            } catch (e) {
+                // Network/permission issue — core logic above already handled it, do nothing further
+            }
         }
 
         function reset() { handled = false; }
@@ -91,63 +138,8 @@ function init() {
             if (ctx.videoCore.getCurrentPlaybackType() !== "onlinestream") return;
             handled = true;
 
-            (async function() {
-                var status;
-                try {
-                    status = await ctx.videoCore.pullStatus();
-                } catch (e) {
-                    gentleFallback("pullStatus: " + e.message);
-                    return;
-                }
-
-                var manifestUrl = status && status.id;
-                if (!manifestUrl) {
-                    gentleFallback("no manifest id in status");
-                    return;
-                }
-
-                var text;
-                try {
-                    var res = await fetch(manifestUrl);
-                    text = await res.text();
-                } catch (e) {
-                    gentleFallback("fetch: " + e.message);
-                    return;
-                }
-
-                var tracks;
-                try {
-                    tracks = parseAudioTracks(text);
-                } catch (e) {
-                    gentleFallback("parse: " + e.message);
-                    return;
-                }
-
-                if (tracks.length === 0) {
-                    // Manifest has no separate audio tracks declared at all —
-                    // single muxed stream, nothing for us to switch.
-                    return;
-                }
-
-                var enTrack = null;
-                for (var i = 0; i < tracks.length; i++) {
-                    if (isEnglish(tracks[i].language, tracks[i].name)) { enTrack = tracks[i]; break; }
-                }
-                // If no track is explicitly tagged English but multiple tracks
-                // exist, trust that English is index 0 (matches observed UI order).
-                if (!enTrack && tracks.length > 1) enTrack = tracks[0];
-
-                if (enTrack) {
-                    try { ctx.videoCore.setAudioTrack(enTrack.index); } catch(e) {}
-                    disableSubtitlesRetried();
-                    ctx.videoCore.showMessage(
-                        "English dub (" + tracks.length + " tracks) — subtitles off", 3000
-                    );
-                } else {
-                    enableEnglishSubtitles();
-                    ctx.videoCore.showMessage("No English dub — subtitles on", 3000);
-                }
-            })();
+            runCoreLogic();          // always runs, guarantees a result
+            tryManifestOverride();    // may silently upgrade the result shortly after
         });
     });
 }
