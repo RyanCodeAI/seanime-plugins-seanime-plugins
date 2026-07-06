@@ -11,11 +11,10 @@
 // Add more provider names to KNOWN_MULTI_AUDIO_PROVIDERS below if you hit
 // the same issue elsewhere — just add the provider's name string.
 
-var KNOWN_MULTI_AUDIO_PROVIDERS = ["aq-anizone"];
-
 function init() {
     $ui.register(function(ctx) {
 
+        var KNOWN_MULTI_AUDIO_PROVIDERS = ["aq-anizone"];
         var handled = false;
 
         function isEnglish(lang, label) {
