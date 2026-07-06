@@ -1,23 +1,18 @@
 /// <reference path="./plugin.d.ts" />
 
-// Auto English Audio — Seanime Plugin (diagnostic build)
-//
-// Same core logic as before (always try track 0, count-based subtitle
-// fallback), PLUS one new safe diagnostic: dumps the actual content of
-// onlinestreamParams, a field we've confirmed exists but never inspected.
-// It may directly contain provider-declared dub/sub info.
+// DIAGNOSTIC — isolates ONE message: the raw content of onlinestreamParams.
+// Shows for 20 seconds, nothing else fires. Same core behavior otherwise.
 
 function init() {
     $ui.register(function(ctx) {
 
         var handled = false;
 
-        function safeStr(o, n) {
+        function safeStr(o) {
             try {
                 var s = JSON.stringify(o);
-                if (!s) return "null";
-                return s.length > n ? s.substring(0, n) + "..." : s;
-            } catch(e) { return "err:" + e.message; }
+                return s ? s : "null";
+            } catch(e) { return "ERROR: " + e.message; }
         }
 
         function isEnglish(lang, label) {
@@ -67,29 +62,34 @@ function init() {
 
             try { ctx.videoCore.setAudioTrack(0); } catch(e) {}
 
-            var pi    = null;
-            var count = 0;
-            try {
-                pi    = ctx.videoCore.getCurrentPlaybackInfo();
-                var subs = (pi && pi.subtitleTracks) || [];
-                count = Array.isArray(subs) ? subs.length : 0;
-            } catch(e) {}
+            // Give the player a moment to settle before touching subtitles —
+            // may also help avoid the libass timing error you saw.
+            var ticks = 0;
+            ctx.setInterval(function() {
+                ticks++;
+                if (ticks !== 2) return; // fires once, ~700ms in
 
-            // NEW: show exactly what's inside onlinestreamParams
-            try {
+                var pi    = null;
+                var count = 0;
+                try {
+                    pi    = ctx.videoCore.getCurrentPlaybackInfo();
+                    var subs = (pi && pi.subtitleTracks) || [];
+                    count = Array.isArray(subs) ? subs.length : 0;
+                } catch(e) {}
+
+                // THE ONE MESSAGE THAT MATTERS — isolated, 20 seconds on screen.
+                // Please screenshot exactly this box.
                 ctx.videoCore.showMessage(
-                    "onlinestreamParams: " + safeStr(pi && pi.onlinestreamParams, 250), 8000
+                    "PARAMS: " + safeStr(pi && pi.onlinestreamParams),
+                    20000
                 );
-            } catch(e) {}
 
-            // Same interim behavior as before, using subtitle count
-            if (count > 0 && count < 3) {
-                disableSubtitlesRetried();
-                ctx.videoCore.showMessage("English dub — subtitles off", 3000);
-            } else {
-                enableEnglishSubtitles();
-                ctx.videoCore.showMessage("No dub — English subtitles on", 3000);
-            }
+                if (count > 0 && count < 3) {
+                    disableSubtitlesRetried();
+                } else {
+                    enableEnglishSubtitles();
+                }
+            }, 350);
         });
     });
 }
