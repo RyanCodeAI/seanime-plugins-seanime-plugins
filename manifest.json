@@ -7,7 +7,7 @@
     "type": "plugin",
     "description": "Automatically switches to English audio when streaming online.",
     "author": "RyanCodeAI",
-    "icon": "",
+    "icon": "https://raw.githubusercontent.com/RyanCodeAI/seanime-plugins-seanime-plugins/refs/heads/main/icon.png",
     "website": "",
     "readme": "",
     "notes": "",
